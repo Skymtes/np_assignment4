@@ -71,7 +71,7 @@ void parse_url(const string &url, string &Desthost, string &Destport, string &Pa
     }
 }
 
-// --- Helper: Get timestamp string ---
+// --- Helper: Get timestamp string (YYYY-MM-DD HH:MM:SS) ---
 string get_timestamp()
 {
     time_t now = time(NULL);
@@ -111,6 +111,7 @@ int main(int argc, char *argv[])
     char *Filename = NULL;
     bool Save_output = false;
 
+    // 1. Argument Parsing
     static struct option long_options[] = {
         {"output", required_argument, 0, 'o'},
         {"help", no_argument, 0, 'h'},
@@ -135,6 +136,7 @@ int main(int argc, char *argv[])
         }
     }
 
+    // Check if URL is provided
     if (optind >= argc)
     {
         fprintf(stderr, "Error: Missing URL argument.\n");
@@ -147,10 +149,11 @@ int main(int argc, char *argv[])
     int Redirect_count = 0;
     const int MAX_REDIRECTS = 10;
 
-    // Timing start
+    // 2. Start Timing
     struct timeval start_tv, end_tv;
     gettimeofday(&start_tv, NULL);
 
+    // Setup I/O context and SSL context
     net::io_context ioc;
     ssl::context ctx(ssl::context::tlsv12_client);
     ctx.set_default_verify_paths();
@@ -164,19 +167,23 @@ int main(int argc, char *argv[])
 
         try
         {
+            // Resolve Host
             tcp::resolver resolver(ioc);
             auto const results = resolver.resolve(Desthost, Destport);
 
+            // Prepare Request
             http::request<http::string_body> req{http::verb::get, Path, 11};
             req.set(http::field::host, Desthost);
             req.set(http::field::user_agent, "myCurl-Boost/1.0");
 
             http::response<http::string_body> res;
 
+            // Handle HTTPS vs HTTP
             if (Is_https)
             {
                 beast::ssl_stream<beast::tcp_stream> stream(ioc, ctx);
 
+                // Set SNI Hostname (critical for virtual hosting)
                 if (!SSL_set_tlsext_host_name(stream.native_handle(), Desthost.c_str()))
                 {
                     beast::error_code ec{static_cast<int>(::ERR_get_error()), net::error::get_ssl_category()};
@@ -211,25 +218,31 @@ int main(int argc, char *argv[])
                 stream.socket().shutdown(tcp::socket::shutdown_both, ec);
             }
 
-            // Print Response Headers
+            // Show Response Headers
             cout << res.base() << endl;
 
             int status = res.result_int();
+
+            // Handle Redirects (3xx)
             if (status >= 300 && status < 400)
             {
                 auto loc = res.find(http::field::location);
                 if (loc != res.end())
                 {
                     string new_loc = string(loc->value());
-                    // Show redirection
                     printf("Redirecting to: %s\n", new_loc.c_str());
                     Current_url = new_loc;
                     Redirect_count++;
-                    continue;
+                    continue; // Loop again with new URL
                 }
             }
 
+            // Success - Process Body
             Total_body_size = res.body().size();
+
+            // Show Body Size explicitly (before summary)
+            printf("Body size: %lld bytes\n", Total_body_size);
+
             if (Save_output && Filename)
             {
                 FILE *fp = fopen(Filename, "wb");
@@ -243,6 +256,7 @@ int main(int argc, char *argv[])
                     perror("fopen");
                 }
             }
+            // Break loop on successful non-redirect response
             break;
         }
         catch (std::exception const &e)
@@ -252,17 +266,19 @@ int main(int argc, char *argv[])
         }
     }
 
+    // 3. Stop Timing
     gettimeofday(&end_tv, NULL);
     double seconds = (end_tv.tv_sec - start_tv.tv_sec) +
                      (end_tv.tv_usec - start_tv.tv_usec) / 1000000.0;
 
+    // 4. Calculate Speed
     double mbps = 0.0;
     if (seconds > 0)
     {
         mbps = (Total_body_size * 8.0) / 1000000.0 / seconds;
     }
 
-    // Final Summary Line
+    // 5. Final Summary Line
     printf("%s %s %lld [bytes] %.6f [s] %.6f [Mbps]\n",
            get_timestamp().c_str(),
            Original_url.c_str(),
